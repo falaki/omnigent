@@ -41,6 +41,7 @@ import {
   GitBranchIcon,
   GitForkIcon,
   InboxIcon,
+  MessagesSquareIcon,
   ListChecksIcon,
   ListFilterIcon,
   LaptopIcon,
@@ -411,6 +412,7 @@ function useActiveNavItem(): {
   isNewChatPage: boolean;
   isInboxPage: boolean;
   isCanvasPage: boolean;
+  isForumPage: boolean;
   isTasksPage: boolean;
   isUsagePage: boolean;
   activeExtensionPageId: string | null;
@@ -422,6 +424,7 @@ function useActiveNavItem(): {
   const leaf = location.pathname.split("/").filter(Boolean).at(-1);
   const isExtensionRoute = extensionPathParts(location.pathname) !== null;
   const isInboxPage = !isExtensionRoute && leaf === "inbox";
+  const isForumPage = !isExtensionRoute && /\/forums(?:\/|$)/.test(location.pathname);
   const isCanvasPage = !isExtensionRoute && leaf === "canvas";
   const isTasksPage = !isExtensionRoute && leaf === "tasks";
   const isUsagePage = !isExtensionRoute && leaf === "usage";
@@ -431,6 +434,7 @@ function useActiveNavItem(): {
     activeConversationId == null &&
     !isInboxPage &&
     !isCanvasPage &&
+    !isForumPage &&
     !isTasksPage &&
     !isUsagePage &&
     !isExtensionRoute;
@@ -446,6 +450,7 @@ function useActiveNavItem(): {
     isNewChatPage,
     isInboxPage,
     isCanvasPage,
+    isForumPage,
     isTasksPage,
     isUsagePage,
     activeExtensionPageId,
@@ -722,6 +727,7 @@ function SidebarImpl({
     isNewChatPage,
     isInboxPage,
     isCanvasPage,
+    isForumPage,
     isTasksPage,
     isUsagePage,
     activeExtensionPageId,
@@ -1173,6 +1179,15 @@ function SidebarImpl({
                   testId="canvas-nav"
                 />
               )}
+              <PrimaryNavLink
+                to="/forums"
+                label="Forum"
+                icon={MessagesSquareIcon}
+                active={isForumPage}
+                onClick={onNavClick}
+                componentId="sidebar.forum"
+                testId="forum-nav"
+              />
               <ExtensionPrimaryNavigation
                 activePageId={activeExtensionPageId}
                 onNavigate={onNavClick}

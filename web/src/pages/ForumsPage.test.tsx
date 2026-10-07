@@ -1,0 +1,197 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { ForumsPage } from "./ForumsPage";
+import { forumRequest } from "@/lib/forumsApi";
+import type { Forum } from "@/lib/forumsApi";
+
+vi.mock("@/hooks/useViewerId", () => ({ useViewerId: () => "local" }));
+vi.mock("@/hooks/useHosts", () => ({
+  useHosts: () => ({
+    data: [
+      {
+        host_id: "host",
+        name: "My host",
+        status: "online",
+        configured_harnesses: { "codex-native": true, "claude-native": false },
+      },
+    ],
+  }),
+  useHostModelOptions: () => ({ data: [{ id: "model", displayName: "Model one" }] }),
+}));
+vi.mock("@/hooks/useAvailableAgents", () => ({
+  fetchAgentCatalog: async () => [
+    { id: "codex", harness: "codex-native", display_name: "Codex" },
+    { id: "claude", harness: "claude-native", display_name: "Claude" },
+  ],
+}));
+vi.mock("@/lib/forumsApi", () => ({ forumRequest: vi.fn(), listForums: vi.fn(async () => []) }));
+vi.mock("@/components/PermissionsModal", () => ({ PermissionsModal: () => null }));
+vi.mock("@/components/ai-elements/message", () => ({
+  MessageResponse: ({ children }: { children: string }) => <p>{children}</p>,
+}));
+
+const forum: Forum = {
+  id: "forum",
+  title: "Review parser",
+  workspace: "/shared",
+  permission_level: 4,
+  status: "running",
+  max_responses: 100,
+  completed: 2,
+  active_index: 0,
+  participants: [0, 1].map((i) => ({
+    session_id: `agent-${i}`,
+    harness: "codex-native",
+    model: "model",
+    name: `${i + 1}. codex-native / model`,
+    error: null,
+    retry_at: 0,
+  })),
+  posts: [
+    { id: "human", author: "alice", role: "user", text: "Review this parser", created_at: 1 },
+    {
+      id: "agent",
+      author: "1. codex-native / model",
+      role: "assistant",
+      text: "Consider empty inputs",
+      created_at: 2,
+    },
+  ],
+};
+const caches: QueryClient[] = [];
+function open(path: string) {
+  const cache = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  caches.push(cache);
+  render(
+    <QueryClientProvider client={cache}>
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/forums" element={<ForumsPage />} />
+          <Route path="/forums/new" element={<ForumsPage />} />
+          <Route path="/forums/:forumId" element={<ForumsPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => vi.mocked(forumRequest).mockReset());
+afterEach(() => {
+  cleanup();
+  caches.splice(0).forEach((cache) => cache.clear());
+});
+
+describe("Forum", () => {
+  it("offers an empty list and entry to creation", async () => {
+    open("/forums");
+    expect(await screen.findByText(/No forums yet/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "New forum" })).toHaveAttribute("href", "/forums/new");
+  });
+
+  it("requires two instances, permits identical pairs, and submits their order", async () => {
+    vi.mocked(forumRequest).mockResolvedValue({ ...forum, status: "blank", posts: [] });
+    open("/forums/new");
+    fireEvent.change(screen.getByLabelText("Host"), { target: { value: "host" } });
+    fireEvent.change(screen.getByLabelText("Shared workspace"), { target: { value: "/shared" } });
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Model one" }));
+    expect(screen.getByRole("button", { name: "Create forum" })).toBeDisabled();
+    expect(screen.queryByText(/Claude ·/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Add another/ }));
+    expect(screen.getByText("1. codex-native / model")).toBeInTheDocument();
+    expect(screen.getByText("2. codex-native / model")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create forum" }));
+    await waitFor(() =>
+      expect(forumRequest).toHaveBeenCalledWith("", {
+        host_id: "host",
+        workspace: "/shared",
+        max_responses: 100,
+        participants: [
+          { agent_id: "codex", harness: "codex-native", model: "model" },
+          { agent_id: "codex", harness: "codex-native", model: "model" },
+        ],
+      }),
+    );
+    expect(await screen.findByText("What should the agents work on?")).toBeInTheDocument();
+  });
+
+  it("attributes posts and sends Stop through its own action", async () => {
+    vi.mocked(forumRequest).mockImplementation(async (_path, body) =>
+      body ? { ...forum, status: "stopped" } : forum,
+    );
+    open("/forums/forum");
+    expect(await screen.findByText("alice")).toBeInTheDocument();
+    expect(screen.getByText("Consider empty inputs")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }));
+    await waitFor(() => expect(forumRequest).toHaveBeenCalledWith("/forum/stop", {}));
+    expect(await screen.findByText(/fresh response allowance/)).toBeInTheDocument();
+  });
+
+  it("saves a human name without changing the account identity", async () => {
+    const named = {
+      ...forum,
+      posts: [{ ...forum.posts[0], author: "local", display_name: "Hossein" }],
+    };
+    vi.mocked(forumRequest).mockImplementation(async (_path, body) =>
+      body ? named : { ...forum, posts: [] },
+    );
+    open("/forums/forum");
+    const name = await screen.findByRole("textbox", { name: "Your name" });
+    fireEvent.change(screen.getByRole("textbox", { name: "Message to the forum" }), {
+      target: { value: "Review this parser" },
+    });
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.change(name, { target: { value: "Hossein" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(forumRequest).toHaveBeenCalledWith(
+        "/forum/messages",
+        expect.objectContaining({ display_name: "Hossein", text: "Review this parser" }),
+      ),
+    );
+    expect(await screen.findByText("Hossein")).toBeInTheDocument();
+    expect(screen.queryByText("local")).not.toBeInTheDocument();
+    expect(screen.queryByText("Human")).not.toBeInTheDocument();
+  });
+
+  it("restores the current user's saved name", async () => {
+    vi.mocked(forumRequest).mockResolvedValue({
+      ...forum,
+      posts: [{ ...forum.posts[0], author: "local", display_name: "Hossein" }],
+    });
+    open("/forums/forum");
+    expect(await screen.findByRole("textbox", { name: "Your name" })).toHaveValue("Hossein");
+  });
+
+  it.each([
+    ["running", 0, "1. codex-native / model is thinking…"],
+    ["running", null, "Preparing the next agent…"],
+    ["paused", null, "Waiting for agents to reconnect…"],
+  ] as const)("shows activity for %s with active index %s", async (status, active_index, label) => {
+    vi.mocked(forumRequest).mockResolvedValue({ ...forum, status, active_index });
+    open("/forums/forum");
+    expect(await screen.findByText(label)).toBeInTheDocument();
+  });
+
+  it.each(["stopped", "limit", "blank"] as const)(
+    "does not show a stale thinking indicator when %s",
+    async (status) => {
+      vi.mocked(forumRequest).mockResolvedValue({ ...forum, status });
+      open("/forums/forum");
+      await screen.findByText("Review parser");
+      expect(screen.queryByText(/is thinking|Preparing the next agent/)).not.toBeInTheDocument();
+    },
+  );
+
+  it("prevents read-only collaborators from posting or stopping", async () => {
+    vi.mocked(forumRequest).mockResolvedValue({ ...forum, permission_level: 1 });
+    open("/forums/forum");
+    await screen.findByText("Review parser");
+    expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Message to the forum" })).toBeDisabled();
+  });
+});

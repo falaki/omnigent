@@ -52,6 +52,10 @@ const InboxPage = withPageView(
   "inbox",
   lazy(() => import("@/pages/InboxPage").then((m) => ({ default: m.InboxPage }))),
 );
+const ForumsPage = withPageView(
+  "forums",
+  lazy(() => import("@/pages/ForumsPage").then((m) => ({ default: m.ForumsPage }))),
+);
 const CanvasPage = withPageView(
   "canvas",
   lazy(() => import("@/pages/CanvasPage").then((m) => ({ default: m.CanvasPage }))),
@@ -171,6 +175,9 @@ function AppRoutes({ basename }: AppProps) {
           <Route path={prefix || "/"} element={<ChatPage />} />
           <Route path={`${prefix}/c/:conversationId`} element={<ChatPage />} />
           <Route path={`${prefix}/inbox`} element={<InboxPage />} />
+          <Route path={`${prefix}/forums`} element={<ForumsPage />} />
+          <Route path={`${prefix}/forums/new`} element={<ForumsPage />} />
+          <Route path={`${prefix}/forums/:forumId`} element={<ForumsPage />} />
           <Route
             path={`${prefix}/canvas`}
             element={
