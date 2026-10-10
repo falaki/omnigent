@@ -305,6 +305,41 @@ async def test_forum_sharing_matches_session_permissions(db_uri, tmp_path, monke
             assert response.status_code == 200, response.text
             assert response.json()["posts"][-1]["author"] == user
     assert len(store.get(forum_id).posts) == 2
+    async with _client(app, "reader@test") as client:
+        assert (
+            await client.post(f"/v1/forums/{forum_id}/pause", json={"paused": True})
+        ).status_code == 403
+    store.mutate(forum_id, lambda s: setattr(s, "status", "running"))
+    async with _client(app, "editor@test") as client:
+        result = await client.post(f"/v1/forums/{forum_id}/pause", json={"paused": True})
+        assert result.status_code == 200
+        assert result.json()["status"] == "suspended"
+        result = await client.post(f"/v1/forums/{forum_id}/pause", json={"paused": False})
+        assert result.status_code == 200
+        assert result.json()["status"] == "running"
+    participant_id = store.get(forum_id).participants[0].session_id
+    async with _client(app, "reader@test") as client:
+        assert (
+            await client.post(
+                f"/v1/forums/{forum_id}/participants/{participant_id}/pause",
+                json={"paused": True},
+            )
+        ).status_code == 403
+    async with _client(app, "editor@test") as client:
+        for paused in [True, False]:
+            result = await client.post(
+                f"/v1/forums/{forum_id}/participants/{participant_id}/pause",
+                json={"paused": paused},
+            )
+            assert result.status_code == 200, result.text
+            assert result.json()["participants"][0]["paused"] is paused
+    async with _client(app, "editor@test") as client:
+        assert (await client.post(f"/v1/forums/{forum_id}/delete")).status_code == 403
+    async with _client(app, "owner@sharing.test") as client:
+        result = await client.post(f"/v1/forums/{forum_id}/delete")
+        assert result.status_code == 200, result.text
+        assert store.get(forum_id) is None
+        assert (await client.get("/v1/forums")).json()["data"] == []
     await app.state.background_title_coordinator.shutdown()
 
 
@@ -375,7 +410,20 @@ async def test_creation_uses_shared_workspace_duplicates_and_cleans_up(
     body = {
         "host_id": "host",
         "workspace": "/shared",
-        "participants": [{"agent_id": "agent", "harness": "codex-native", "model": "model"}] * 2,
+        "participants": [
+            {
+                "agent_id": "agent",
+                "harness": "codex-native",
+                "model": "model",
+                "display_name": " Reviewer ",
+            },
+            {
+                "agent_id": "agent",
+                "harness": "codex-native",
+                "model": "model",
+                "display_name": " ",
+            },
+        ],
     }
     if scenario == "unknown_model":
         body["participants"][0]["model"] = "not-in-catalog"
@@ -396,11 +444,23 @@ async def test_creation_uses_shared_workspace_duplicates_and_cleans_up(
         forum = result.json()
         assert forum["status"] == "blank"
         assert forum["max_responses"] == 100
+        assert [p["name"] for p in forum["participants"]] == [
+            "1. Reviewer",
+            "2. codex-native / model",
+        ]
+        assert service.store.get(forum["id"]).participants[0].name == "1. Reviewer"
         assert len({p["session_id"] for p in forum["participants"]}) == 2
         assert {row[1].workspace for row in created} == {"/shared"}
         assert all(row[1].parent_session_id == forum["id"] for row in created[1:])
         assert all(row[1].model_override == "model" for row in created)
         assert models.await_count == 1
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            result = await client.post(f"/v1/forums/{forum['id']}/delete")
+        assert result.status_code == 200, result.text
+        assert deleted == [p["session_id"] for p in forum["participants"]] + [forum["id"]]
+        assert service.store.get(forum["id"]) is None
     await service.shutdown()
 
 
@@ -537,3 +597,106 @@ async def test_guidance_is_visible_while_intent_classification_runs(
             release.set()
             post.cancel()
             await asyncio.gather(post, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_forum_deletion_failure_stays_fenced_and_can_retry(app, db_uri, monkeypatch):
+    import httpx
+
+    from omnigent.server.routes import forums as routes
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+
+    conversations = SqlAlchemyConversationStore(db_uri)
+    parent = conversations.create_conversation()
+    store = ForumStore(db_uri)
+    initial = state()
+    initial.status = "running"
+    initial.active_index = 0
+    initial.active_token = "in-flight"
+    store.create(parent.id, initial)
+    real_endpoint = routes._session_endpoint
+
+    async def fail_delete(**_kwargs):
+        from fastapi import HTTPException
+
+        raise HTTPException(503, "Cleanup unavailable")
+
+    monkeypatch.setattr(
+        routes,
+        "_session_endpoint",
+        lambda request, path, method: (
+            fail_delete if method == "DELETE" else real_endpoint(request, path, method)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        result = await client.post(f"/v1/forums/{parent.id}/delete")
+        assert result.status_code == 503
+        saved = store.get(parent.id)
+        assert saved.status == "deleting"
+        assert saved.active_token is None
+        assert saved.select(0) is None
+        result = await client.post(f"/v1/forums/{parent.id}/messages", json={"text": "Restart"})
+        assert result.status_code == 409
+        monkeypatch.setattr(routes, "_session_endpoint", real_endpoint)
+        result = await client.post(f"/v1/forums/{parent.id}/delete")
+        assert result.status_code == 200, result.text
+        assert store.get(parent.id) is None
+
+
+def test_quarantined_agent_is_skipped_and_late_output_is_rejected():
+    s = state()
+    s.participants.append(Participant(uuid.uuid4().hex, "codex", "model", "Third"))
+    s.status = "running"
+    s.begin(0, "old-turn")
+    assert s.set_participant_paused(0, True) == s.participants[0].session_id
+    assert s.select(100) == 1
+    assert not s.finish("old-turn", "late output", 100)
+    assert s.completed == 0
+    restored = ForumState.from_dict(s.to_dict())
+    assert restored.participants[0].paused
+    restored.next_index = 0
+    assert restored.select(100) == 1
+    restored.set_participant_paused(0, False)
+    assert restored.select(100) == 0
+
+
+def test_quarantine_waits_for_two_and_resume_preserves_explicit_stop():
+    s = state()
+    s.participants = s.participants[:2]
+    s.status = "running"
+    s.completed = 1
+    s.set_participant_paused(0, True)
+    assert s.status == "paused"
+    assert s.select(100) is None
+    s.set_participant_paused(0, False)
+    assert s.select(100) == 0
+    assert s.completed == 1
+    s.stop()
+    s.set_participant_paused(0, True)
+    s.set_participant_paused(0, False)
+    assert s.status == "stopped"
+    assert s.select(100) is None
+
+
+def test_forum_pause_holds_guidance_and_resumes_interrupted_turn():
+    s = state()
+    s.status = "running"
+    s.completed = 7
+    s.begin(1, "interrupted")
+    assert s.pause() == s.participants[1].session_id
+    assert not s.finish("interrupted", "late", 100)
+    message(s, "Consider another approach")
+    s.set_participant_paused(2, True)
+    s.set_participant_paused(2, False)
+    assert s.status == "suspended"
+    assert s.select(100) is None
+    restored = ForumState.from_dict(s.to_dict())
+    assert restored.status == "suspended"
+    restored.resume()
+    assert restored.select(100) == 1
+    assert restored.completed == 7
+    restored.stop()
+    restored.resume()
+    assert restored.status == "stopped"

@@ -9,10 +9,21 @@ import {
   PlusIcon,
   SquareIcon,
   UsersIcon,
+  Trash2Icon,
+  PauseIcon,
+  PlayIcon,
 } from "lucide-react";
 import { useViewerId } from "@/hooks/useViewerId";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { PermissionsModal } from "@/components/PermissionsModal";
@@ -121,10 +132,11 @@ function NewForum() {
       forumRequest<Forum>("", {
         host_id: hostId,
         workspace,
-        participants: selected.map(({ agent_id, harness, model }) => ({
+        participants: selected.map(({ agent_id, harness, model, display_name }) => ({
           agent_id,
           harness,
           model,
+          ...(display_name?.trim() ? { display_name: display_name.trim() } : {}),
         })),
         max_responses: maximum,
       }),
@@ -241,9 +253,24 @@ function NewForum() {
               key={p.key}
               className="flex items-center justify-between gap-3 rounded-lg bg-background px-3 py-2 text-sm shadow-xs"
             >
-              <span>
-                {index + 1}. {p.harness} / {p.model}
-              </span>
+              <div className="min-w-0 flex-1 space-y-2">
+                <span className="block break-words text-xs text-muted-foreground">
+                  {index + 1}. {p.harness} / {p.model}
+                </span>
+                <Input
+                  aria-label={`Display name for participant ${index + 1}`}
+                  placeholder="Display name (optional)"
+                  maxLength={100}
+                  value={p.display_name ?? ""}
+                  onChange={(e) =>
+                    setSelected(
+                      selected.map((entry) =>
+                        entry.key === p.key ? { ...entry, display_name: e.target.value } : entry,
+                      ),
+                    )
+                  }
+                />
+              </div>
               <Button
                 variant="ghost"
                 type="button"
@@ -289,13 +316,25 @@ function NewForum() {
 const STATUS: Record<Forum["status"], string> = {
   blank: "Ready for your first question",
   running: "Discussing",
-  paused: "Paused — waiting for agents to recover",
+  paused: "Paused — waiting for at least two available agents",
   stopped: "Stopped",
   limit: "Response limit reached",
+  deleting: "Deleting forum…",
+  suspended: "Paused — resume when you’re ready",
 };
 
 function Discussion({ id }: { id: string }) {
   const cache = useQueryClient();
+  const navigate = useNavigate();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const remove = useMutation({
+    mutationFn: () => forumRequest<{ deleted: boolean }>(`/${id}/delete`, {}),
+    onSuccess: () => {
+      cache.removeQueries({ queryKey: ["forum", id] });
+      void cache.invalidateQueries({ queryKey: ["forums"] });
+      navigate("/forums");
+    },
+  });
   const viewerId = useViewerId();
   const [name, setName] = useState<string | null>(null);
   const query = useQuery({
@@ -322,6 +361,21 @@ function Discussion({ id }: { id: string }) {
     mutationFn: () => forumRequest<Forum>(`/${id}/stop`, {}),
     onSuccess: update,
   });
+  const pauseForum = useMutation({
+    mutationFn: (paused: boolean) => forumRequest<Forum>(`/${id}/pause`, { paused }),
+    onSuccess: update,
+    onSettled: () => {
+      void cache.invalidateQueries({ queryKey: ["forum", id] });
+    },
+  });
+  const participantPause = useMutation({
+    mutationFn: ({ sessionId, paused }: { sessionId: string; paused: boolean }) =>
+      forumRequest<Forum>(`/${id}/participants/${sessionId}/pause`, { paused }),
+    onSuccess: update,
+    onSettled: () => {
+      void cache.invalidateQueries({ queryKey: ["forum", id] });
+    },
+  });
   const forum = query.data;
   const savedName = forum?.posts.findLast(
     (p) => p.role === "user" && p.author === viewerId && p.display_name,
@@ -338,7 +392,8 @@ function Discussion({ id }: { id: string }) {
         {query.error?.message || "Forum unavailable"}
       </p>
     );
-  const canEdit = forum.permission_level == null || forum.permission_level >= 2;
+  const canEdit =
+    forum.status !== "deleting" && (forum.permission_level == null || forum.permission_level >= 2);
   const canManage = forum.permission_level == null || forum.permission_level >= 3;
   const active =
     forum.status === "running" && forum.active_index !== null
@@ -349,7 +404,7 @@ function Discussion({ id }: { id: string }) {
     : forum.status === "running"
       ? "Preparing the next agent…"
       : forum.status === "paused"
-        ? "Waiting for agents to reconnect…"
+        ? "Waiting for at least two active, available agents…"
         : null;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -367,13 +422,82 @@ function Discussion({ id }: { id: string }) {
         </Button>
         <Button
           variant="outline"
+          onClick={() => pauseForum.mutate(forum.status !== "suspended")}
+          disabled={
+            !canEdit ||
+            !["running", "paused", "suspended"].includes(forum.status) ||
+            pauseForum.isPending ||
+            stop.isPending
+          }
+        >
+          {forum.status === "suspended" ? (
+            <PlayIcon className="size-4" />
+          ) : (
+            <PauseIcon className="size-4" />
+          )}
+          {forum.status === "suspended" ? "Resume" : "Pause"}
+        </Button>
+        <Button
+          variant="outline"
           onClick={() => stop.mutate()}
-          disabled={!canEdit || !["running", "paused"].includes(forum.status) || stop.isPending}
+          disabled={
+            !canEdit ||
+            !["running", "paused", "suspended"].includes(forum.status) ||
+            stop.isPending ||
+            pauseForum.isPending
+          }
         >
           <SquareIcon className="size-4" />
           Stop
         </Button>
+        {(forum.permission_level == null || forum.permission_level >= 4) && (
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Delete forum"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2Icon className="size-4 text-destructive" />
+          </Button>
+        )}
       </header>
+      <Dialog
+        open={confirmDelete}
+        onOpenChange={(open) => {
+          if (!remove.isPending) setConfirmDelete(open);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete forum?</DialogTitle>
+            <DialogDescription>
+              This permanently deletes this discussion and its agent sessions and stops any active
+              agents. Files in the shared workspace are kept. This cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {remove.error && (
+            <p role="alert" className="text-sm text-destructive">
+              {remove.error.message}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={remove.isPending}
+              onClick={() => setConfirmDelete(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={remove.isPending}
+              onClick={() => remove.mutate()}
+            >
+              {remove.isPending ? "Deleting…" : "Delete permanently"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div
         className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 bg-muted/20 px-6 py-2 text-xs text-muted-foreground"
         role="status"
@@ -385,9 +509,8 @@ function Discussion({ id }: { id: string }) {
       </div>
       <div className="flex flex-wrap gap-2 border-b border-border/50 px-6 py-3">
         {forum.participants.map((p, i) => (
-          <Link
+          <div
             key={p.session_id}
-            to={`/c/${p.session_id}`}
             className={cn(
               "flex min-w-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition-colors hover:bg-muted",
               active === p
@@ -396,16 +519,37 @@ function Discussion({ id }: { id: string }) {
             )}
             title="Open participant session for tools, files, and approvals"
           >
-            <BotIcon className="size-3.5 shrink-0" />
-            <span className="truncate">{p.name}</span>
-            {active && forum.active_index === i
-              ? " · Responding…"
-              : p.error
-                ? " · Unavailable, retrying"
-                : ""}
-          </Link>
+            <Link to={`/c/${p.session_id}`} className="flex min-w-0 items-center gap-2">
+              <BotIcon className="size-3.5 shrink-0" />
+              <span className={cn("truncate", p.paused && "text-muted-foreground")}>{p.name}</span>
+            </Link>
+            {p.paused
+              ? " · Inactive"
+              : active && forum.active_index === i
+                ? " · Responding…"
+                : p.error
+                  ? " · Unavailable, retrying"
+                  : ""}
+            <button
+              type="button"
+              className="rounded-full p-1 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40"
+              aria-label={`${p.paused ? "Resume" : "Pause"} ${p.name}`}
+              title={p.paused ? "Resume participant" : "Pause participant and skip their turns"}
+              disabled={!canEdit || participantPause.isPending}
+              onClick={() =>
+                participantPause.mutate({ sessionId: p.session_id, paused: !p.paused })
+              }
+            >
+              {p.paused ? <PlayIcon className="size-3.5" /> : <PauseIcon className="size-3.5" />}
+            </button>
+          </div>
         ))}
       </div>
+      {(participantPause.error || pauseForum.error) && (
+        <p role="alert" className="px-6 py-2 text-sm text-destructive">
+          {(participantPause.error || pauseForum.error)?.message}
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6" aria-label="Forum discussion">
         {!forum.posts.length && (
           <div className="mx-auto max-w-xl py-12 text-center">
@@ -508,9 +652,11 @@ function Discussion({ id }: { id: string }) {
           />
           <div className="flex items-center justify-between gap-3 px-3 pb-3">
             <p className="text-xs leading-relaxed text-muted-foreground">
-              {["stopped", "limit"].includes(forum.status)
-                ? "A new message restarts the loop with a fresh response allowance."
-                : "Guidance reaches the next agent. Use Stop to interrupt immediately."}
+              {forum.status === "suspended"
+                ? "Discussion is paused. Your guidance is saved; click Resume to continue."
+                : ["stopped", "limit"].includes(forum.status)
+                  ? "A new message restarts the loop with a fresh response allowance."
+                  : "Guidance reaches the next agent. Use Stop to interrupt immediately."}
             </p>
             <Button
               type="submit"

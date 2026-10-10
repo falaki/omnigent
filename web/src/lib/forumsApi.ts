@@ -3,6 +3,7 @@ import { apiErrorFromResponse } from "@/lib/sessionsApi";
 
 export interface ForumParticipantInput {
   agent_id: string;
+  display_name?: string;
   harness: string;
   model: string;
 }
@@ -13,13 +14,14 @@ export interface ForumParticipant {
   name: string;
   error: string | null;
   retry_at: number;
+  paused?: boolean;
 }
 export interface Forum {
   id: string;
   title: string | null;
   permission_level: number | null;
   workspace: string | null;
-  status: "blank" | "running" | "paused" | "stopped" | "limit";
+  status: "blank" | "running" | "paused" | "stopped" | "limit" | "deleting" | "suspended";
   participants: ForumParticipant[];
   max_responses: number;
   completed: number;

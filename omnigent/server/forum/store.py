@@ -78,3 +78,9 @@ class ForumStore:
             if row and row.lease_owner == owner:
                 row.lease_owner = None
                 row.lease_until = 0
+
+    def delete(self, forum_id: str) -> None:
+        with self._write("delete_forum") as session:
+            row = session.get(SqlForum, (current_workspace_id(), forum_id))
+            if row is not None:
+                session.delete(row)

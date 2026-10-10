@@ -126,7 +126,7 @@ class ForumService:
                     else:
                         await asyncio.sleep(0.5)
                         continue
-                if state.status in {"blank", "stopped", "limit"}:
+                if state.status in {"blank", "stopped", "limit", "deleting", "suspended"}:
                     latest = await asyncio.to_thread(self.store.get, forum_id)
                     if latest is not None and latest.status in {"running", "paused"}:
                         continue

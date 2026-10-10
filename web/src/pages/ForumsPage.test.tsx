@@ -103,6 +103,10 @@ describe("Forum", () => {
     fireEvent.click(screen.getByRole("button", { name: /Add another/ }));
     expect(screen.getByText("1. codex-native / model")).toBeInTheDocument();
     expect(screen.getByText("2. codex-native / model")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Display name for participant 1"), {
+      target: { value: " Reviewer " },
+    });
+    expect(screen.getByLabelText("Display name for participant 2")).toHaveValue("");
     fireEvent.click(screen.getByRole("button", { name: "Create forum" }));
     await waitFor(() =>
       expect(forumRequest).toHaveBeenCalledWith("", {
@@ -110,7 +114,7 @@ describe("Forum", () => {
         workspace: "/shared",
         max_responses: 100,
         participants: [
-          { agent_id: "codex", harness: "codex-native", model: "model" },
+          { agent_id: "codex", harness: "codex-native", model: "model", display_name: "Reviewer" },
           { agent_id: "codex", harness: "codex-native", model: "model" },
         ],
       }),
@@ -169,7 +173,7 @@ describe("Forum", () => {
   it.each([
     ["running", 0, "1. codex-native / model is thinking…"],
     ["running", null, "Preparing the next agent…"],
-    ["paused", null, "Waiting for agents to reconnect…"],
+    ["paused", null, "Waiting for at least two active, available agents…"],
   ] as const)("shows activity for %s with active index %s", async (status, active_index, label) => {
     vi.mocked(forumRequest).mockResolvedValue({ ...forum, status, active_index });
     open("/forums/forum");
@@ -186,10 +190,66 @@ describe("Forum", () => {
     },
   );
 
+  it("pauses and resumes the entire forum beside Stop", async () => {
+    let status: Forum["status"] = "running";
+    vi.mocked(forumRequest).mockImplementation(async (_path, body) => {
+      if (body) status = (body as { paused: boolean }).paused ? "suspended" : "running";
+      return { ...forum, status };
+    });
+    open("/forums/forum");
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByText("Paused — resume when you’re ready")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() =>
+      expect(forumRequest).toHaveBeenCalledWith("/forum/pause", { paused: false }),
+    );
+    expect(await screen.findByRole("button", { name: "Pause" })).toBeEnabled();
+  });
+
+  it("pauses and resumes a participant independently", async () => {
+    let paused = false;
+    vi.mocked(forumRequest).mockImplementation(async (_path, body) => {
+      if (body) paused = (body as { paused: boolean }).paused;
+      return {
+        ...forum,
+        participants: forum.participants.map((p, i) => ({ ...p, paused: i === 0 && paused })),
+      };
+    });
+    open("/forums/forum");
+    fireEvent.click(await screen.findByRole("button", { name: "Pause 1. codex-native / model" }));
+    await waitFor(() =>
+      expect(forumRequest).toHaveBeenCalledWith("/forum/participants/agent-0/pause", {
+        paused: true,
+      }),
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Resume 1. codex-native / model" }));
+    await waitFor(() =>
+      expect(forumRequest).toHaveBeenCalledWith("/forum/participants/agent-0/pause", {
+        paused: false,
+      }),
+    );
+  });
+
+  it("requires confirmation before deleting and returns to the list", async () => {
+    vi.mocked(forumRequest).mockResolvedValue(forum);
+    open("/forums/forum");
+    fireEvent.click(await screen.findByRole("button", { name: "Delete forum" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(forumRequest).not.toHaveBeenCalledWith("/forum/delete", {});
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Delete forum" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(forumRequest).toHaveBeenCalledWith("/forum/delete", {}));
+    expect(await screen.findByRole("heading", { name: "Forums" })).toBeInTheDocument();
+  });
+
   it("prevents read-only collaborators from posting or stopping", async () => {
     vi.mocked(forumRequest).mockResolvedValue({ ...forum, permission_level: 1 });
     open("/forums/forum");
     await screen.findByText("Review parser");
+    expect(screen.queryByRole("button", { name: "Delete forum" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     expect(screen.getByRole("textbox", { name: "Message to the forum" })).toBeDisabled();

@@ -17,6 +17,12 @@ active turn; only completed responses consume the configured allowance.
   participant with a fresh allowance.
 - `outages`: bounded retries, visible unavailable state, skip/rejoin, and automatic
   pause/recovery when fewer than two participants are eligible.
+- `pause`: Pause beside Stop holds the whole forum until Resume, preserving the
+  response count and retrying the interrupted participant. Guidance stays queued.
+- `quarantine`: editors pause/resume individual participants; inactive agents are
+  skipped until resumed, and fewer than two available agents pauses the loop.
+- `delete`: owner-only confirmed deletion of discussion and participant sessions;
+  shared workspace files remain.
 - `sharing`: session-equivalent read/edit/manage access and forum share links.
 
 ## How to get to it (user POV)
@@ -37,7 +43,9 @@ instances on the isolated host. Claude/Codex mock journeys also require their CL
 
 For both desktop navigation and the mobile drawer, select Forum, check the empty
 list, then create a forum. Select a model and use Add another so the same pair
-appears twice. Verify numbered order and a disabled Create button below two
+appears twice. Enter a display name for each instance in Response order; leave
+one blank to keep its harness/model label. Verify the names appear in the
+discussion and thinking indicator after creation. Verify numbered order and a disabled Create button below two
 participants. Enter an isolated workspace and set the limit to 3. The new forum
 must open blank. Enter Your name and post a small programming task. Verify the
 post uses that name without a Human subtitle, and reloading restores the name.
@@ -58,6 +66,15 @@ posts. Copy the forum link and reopen it at desktop and mobile widths.
 
 Automated contracts: `tests/server/test_forum.py` (plain pytest) and
 `web/src/pages/ForumsPage.test.tsx` (component tests, no repro instance required).
+
+Open an existing forum, choose Delete forum, and cancel to verify no deletion.
+Confirm Delete permanently and verify return to the list with the forum gone.
+Readers and editors must not see the delete action. Repeat on mobile web.
+
+Pause the responding participant using its header pause icon. Verify it becomes
+Inactive, its interrupted response is not counted, and the other agents continue
+in order. Resume it and verify it rejoins. With two participants, pausing one
+must hold the loop until resumed. Readers cannot operate these controls.
 
 ## Gotchas
 

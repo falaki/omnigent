@@ -15,6 +15,7 @@ class Participant:
     failures: int = 0
     retry_at: float = 0
     error: str | None = None
+    paused: bool = False
 
 
 @dataclass
@@ -57,6 +58,24 @@ class ForumState:
             self.completed = 0
             self.status = "running"
 
+    def pause(self) -> str | None:
+        if self.status not in {"running", "paused"}:
+            return None
+        interrupted = None
+        if self.active_index is not None:
+            self.next_index = self.active_index
+            interrupted = self.participants[self.active_index].session_id
+        self.generation += 1
+        self.active_index = None
+        self.active_token = None
+        self.status = "suspended"
+        return interrupted
+
+    def resume(self) -> None:
+        if self.status == "suspended":
+            self.generation += 1
+            self.status = "running"
+
     def stop(self) -> None:
         self.generation += 1
         self.status = "stopped"
@@ -65,23 +84,38 @@ class ForumState:
         self.active_index = None
         self.active_token = None
 
+    def set_participant_paused(self, index: int, paused: bool) -> str | None:
+        participant = self.participants[index]
+        participant.paused = paused
+        interrupted = None
+        if paused and self.active_index == index:
+            interrupted = participant.session_id
+            self.active_index = None
+            self.active_token = None
+            self.next_index = (index + 1) % len(self.participants)
+        if self.status in {"running", "paused"}:
+            self.status = (
+                "paused" if sum(not p.paused for p in self.participants) < 2 else "running"
+            )
+        return interrupted
+
     def select(self, now: float) -> int | None:
         if self.status not in {"running", "paused"} or self.active_token:
             return None
         if self.completed >= self.max_responses:
             self.status = "limit"
             return None
-        available = [p for p in self.participants if p.retry_at <= now]
+        available = [p for p in self.participants if not p.paused and p.retry_at <= now]
         if len(available) < 2:
             self.status = "paused"
             return None
         self.status = "running"
         pending = self.participants[self.next_index]
-        if 0 < pending.failures < 3 and pending.retry_at > now:
+        if not pending.paused and 0 < pending.failures < 3 and pending.retry_at > now:
             return None
         for offset in range(len(self.participants)):
             index = (self.next_index + offset) % len(self.participants)
-            if self.participants[index].retry_at <= now:
+            if not self.participants[index].paused and self.participants[index].retry_at <= now:
                 return index
         return None
 

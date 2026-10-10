@@ -14,7 +14,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from omnigent.errors import OmnigentError
-from omnigent.server.auth import LEVEL_EDIT, LEVEL_READ
+from omnigent.server.auth import LEVEL_EDIT, LEVEL_OWNER, LEVEL_READ
 from omnigent.server.forum.service import ForumService, explicit_stop
 from omnigent.server.forum.state import ForumState, Participant
 from omnigent.server.forum.store import ForumStore
@@ -33,6 +33,7 @@ class ForumParticipantInput(BaseModel):
     agent_id: str
     harness: str
     model: str = Field(min_length=1)
+    display_name: str | None = Field(default=None, max_length=100)
 
 
 class CreateForumRequest(BaseModel):
@@ -41,6 +42,11 @@ class CreateForumRequest(BaseModel):
     max_responses: int = Field(default=100, ge=1, le=10000)
     host_id: str
     workspace: str = Field(min_length=1)
+
+
+class ForumParticipantPauseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    paused: bool
 
 
 class ForumMessageRequest(BaseModel):
@@ -222,12 +228,15 @@ def create_forums_router(
                     )
                 )
                 created.append(child.id)
+                name = (participant.display_name or "").strip()
+                if not name:
+                    name = f"{participant.harness} / {participant.model}"
                 participants.append(
                     Participant(
                         child.id,
                         participant.harness,
                         participant.model,
-                        f"{i + 1}. {participant.harness} / {participant.model}",
+                        f"{i + 1}. {name}",
                     )
                 )
             state = ForumState(
@@ -296,6 +305,8 @@ def create_forums_router(
         }
 
         def append(s: ForumState) -> None:
+            if s.status == "deleting":
+                raise HTTPException(409, "Forum is being deleted")
             if any(p["id"] == body.id.hex for p in s.posts):
                 return
             if stop and s.active_index is not None:
@@ -372,12 +383,45 @@ def create_forums_router(
             wake(request, forum_id)
         return await response(request, forum_id, state)
 
+    @router.post("/forums/{forum_id}/pause")
+    async def pause_forum(
+        request: Request, forum_id: str, body: ForumParticipantPauseRequest
+    ) -> dict[str, Any]:
+        await access(request, forum_id, LEVEL_EDIT)
+        interrupted = []
+
+        def update(state: ForumState) -> None:
+            if state.status == "deleting":
+                raise HTTPException(409, "Forum is being deleted")
+            if body.paused:
+                session_id = state.pause()
+                if session_id:
+                    interrupted.append(session_id)
+            else:
+                state.resume()
+
+        state = await asyncio.to_thread(store.mutate, forum_id, update)
+        if state is None:
+            raise HTTPException(404, "Forum not found")
+        if interrupted:
+            endpoint = _session_endpoint(request, "/v1/sessions/{session_id}/events", "POST")
+            await endpoint(
+                request=request,
+                session_id=interrupted[0],
+                body=SessionEventInput(type="interrupt"),
+            )
+        if state.status in {"running", "paused"}:
+            wake(request, forum_id)
+        return await response(request, forum_id, state)
+
     @router.post("/forums/{forum_id}/stop")
     async def stop_forum(request: Request, forum_id: str) -> dict[str, Any]:
         await access(request, forum_id, LEVEL_EDIT)
         active = []
 
         def stop(state: ForumState) -> None:
+            if state.status == "deleting":
+                raise HTTPException(409, "Forum is being deleted")
             if state.active_index is not None:
                 active.append(state.participants[state.active_index].session_id)
             state.stop()
@@ -391,5 +435,56 @@ def create_forums_router(
         if state is None:
             raise HTTPException(404, "Forum not found")
         return await response(request, forum_id, state)
+
+    @router.post("/forums/{forum_id}/participants/{session_id}/pause")
+    async def pause_participant(
+        request: Request, forum_id: str, session_id: str, body: ForumParticipantPauseRequest
+    ) -> dict[str, Any]:
+        await access(request, forum_id, LEVEL_EDIT)
+        interrupted = []
+
+        def update(state: ForumState) -> None:
+            if state.status == "deleting":
+                raise HTTPException(409, "Forum is being deleted")
+            index = next(
+                (i for i, p in enumerate(state.participants) if p.session_id == session_id),
+                None,
+            )
+            if index is None:
+                raise HTTPException(404, "Participant not found")
+            active = state.set_participant_paused(index, body.paused)
+            if active:
+                interrupted.append(active)
+
+        state = await asyncio.to_thread(store.mutate, forum_id, update)
+        if state is None:
+            raise HTTPException(404, "Forum not found")
+        if interrupted:
+            endpoint = _session_endpoint(request, "/v1/sessions/{session_id}/events", "POST")
+            await endpoint(
+                request=request, session_id=session_id, body=SessionEventInput(type="interrupt")
+            )
+        if state.status in {"running", "paused"}:
+            wake(request, forum_id)
+        return await response(request, forum_id, state)
+
+    @router.post("/forums/{forum_id}/delete")
+    async def delete_forum(request: Request, forum_id: str) -> dict[str, bool]:
+        await access(request, forum_id, LEVEL_OWNER)
+
+        def mark_deleting(state: ForumState) -> None:
+            state.stop()
+            state.status = "deleting"
+
+        state = await asyncio.to_thread(store.mutate, forum_id, mark_deleting)
+        if state is None:
+            raise HTTPException(404, "Forum not found")
+        endpoint = _session_endpoint(request, "/v1/sessions/{session_id}", "DELETE")
+        for session_id in [p.session_id for p in state.participants] + [forum_id]:
+            if await asyncio.to_thread(conversation_store.get_conversation, session_id) is None:
+                continue
+            await endpoint(request=request, session_id=session_id, delete_branch=False)
+        await asyncio.to_thread(store.delete, forum_id)
+        return {"deleted": True}
 
     return router, service
