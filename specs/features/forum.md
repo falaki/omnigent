@@ -123,6 +123,11 @@ Confirmed from the user's request:
 Additional requirements will be recorded as decisions are made. Questions
 below are not implied requirements or agreed defaults.
 
+Consensus completion is extended by [forum-consensus.md](forum-consensus.md):
+fresh explicit DONE votes from every non-quarantined participant (at least two)
+can stop discussion early. An outage does not remove an agent from the quorum.
+The human still judges the result and can restart with new guidance.
+
 ## Implementation decisions
 
 These are implementation defaults within the agreed requirements, rather than

@@ -1,3 +1,4 @@
+import { useForumSessionIds, isForumSession } from "@/hooks/useForumSessionIds";
 import { filterSessionScope } from "@/lib/sessionVisibility";
 import { getCurrentUserId } from "@/lib/identity";
 import { PinCapacityContext, SidebarConfigContext } from "@/lib/sidebarConfig";
@@ -1127,6 +1128,15 @@ function SidebarImpl({
                   Automations
                 </Link>
               </Button>
+              <PrimaryNavLink
+                to="/forums"
+                label="Forums"
+                icon={MessagesSquareIcon}
+                active={isForumPage}
+                onClick={onNavClick}
+                componentId="sidebar.forum"
+                testId="forum-nav"
+              />
               <Button
                 asChild
                 variant="ghost"
@@ -1179,15 +1189,6 @@ function SidebarImpl({
                   testId="canvas-nav"
                 />
               )}
-              <PrimaryNavLink
-                to="/forums"
-                label="Forum"
-                icon={MessagesSquareIcon}
-                active={isForumPage}
-                onClick={onNavClick}
-                componentId="sidebar.forum"
-                testId="forum-nav"
-              />
               <ExtensionPrimaryNavigation
                 activePageId={activeExtensionPageId}
                 onNavigate={onNavClick}
@@ -1397,6 +1398,7 @@ function ProjectFolder({
     if (expanded) registerFolder(name, watchedRows);
   }, [expanded, name, watchedRows, registerFolder]);
   useEffect(() => () => registerFolder(name, null), [expanded, name, registerFolder]);
+  const forumSessionIds = useForumSessionIds();
   const pinnedSet = useMemo(() => new Set(pinnedConversationIds), [pinnedConversationIds]);
   const conversations = useMemo(() => {
     // Union the folder's own pages with its members from the globally-loaded
@@ -1408,11 +1410,11 @@ function ProjectFolder({
     for (const c of windowConversations) byId.set(c.id, c);
     // Pinned sessions live in the global Pinned section, not their folder.
     return sortByUpdatedAtDesc(
-      [...byId.values()].filter((c) => !pinnedSet.has(c.id)),
+      [...byId.values()].filter((c) => !pinnedSet.has(c.id) && !isForumSession(c, forumSessionIds)),
       activeOverride,
       frozenSortKeys,
     );
-  }, [query.data, windowConversations, pinnedSet, activeOverride, frozenSortKeys]);
+  }, [query.data, windowConversations, pinnedSet, activeOverride, frozenSortKeys, forumSessionIds]);
   const errors = useSessionErrorStates(conversations);
   const startingConversationId = useChatStore((s) =>
     s.status === "streaming" || s.terminalPending ? s.conversationId : null,
@@ -1724,12 +1726,16 @@ function ConversationList({
   // the viewer's own sessions (Chats) and ones shared with them. Archived
   // sessions render in their own group at the bottom (below "Shared with
   // me"); a pinned-then-archived session shows under Archived, not Pinned.
+  const forumSessionIds = useForumSessionIds();
   const pinnedSet = useMemo(() => new Set(pinnedConversationIds), [pinnedConversationIds]);
   const loadedSections = useMemo(() => {
     // Merge the server pinned set in, so a pinned session outside the loaded
     // paginated window still renders. Dedupe by id: a pinned session is usually
     // also present in the paginated list, and merging both would render it twice.
-    const allWithPinned = dedupeConversationsById([...allConversations, ...pinnedConversations]);
+    const allWithPinned = dedupeConversationsById([
+      ...allConversations,
+      ...pinnedConversations,
+    ]).filter((c) => !isForumSession(c, forumSessionIds));
     const notArchived = allWithPinned.filter((c) => c.archived !== true);
     // The filter picks the slice; the Pinned / Projects / Sessions structure is
     // then built from it, so every filter reuses the same layout.
@@ -1799,6 +1805,7 @@ function ConversationList({
     );
     return { pinned, sessions, projectGroups };
   }, [
+    forumSessionIds,
     allConversations,
     pinnedConversations,
     pinnedSet,

@@ -245,14 +245,23 @@ export function AppShell() {
 
   // Read early: the conversationId scopes the per-session workspace state
   // (rail open/width/tab/open files) used throughout this component.
-  const { conversationId, extensionId } = useParams<{
+  const {
+    conversationId: chatConversationId,
+    forumId,
+    extensionId,
+  } = useParams<{
     conversationId: string;
+    forumId: string;
     extensionId: string;
   }>();
   // A client-only temp id (`temp:*`, shown while `createSession` is in flight)
   // has no server session behind it. Feed every server-scoped hook this instead
   // of the raw route id so none of them fetch `/v1/sessions/temp:*` during the
   // create window (or on a stale temp reload, before ChatPage redirects).
+  const conversationId = chatConversationId ?? forumId;
+  useEffect(() => {
+    if (forumId) void useChatStore.getState().switchTo(forumId);
+  }, [forumId]);
   const serverConversationId = isTempConvId(conversationId) ? undefined : conversationId;
   const pendingConversation = conversationId != null && serverConversationId == null;
   const [fileViewerCommentsOpen, setFileViewerCommentsOpen] = useState(false);
@@ -597,7 +606,7 @@ export function AppShell() {
     () => ({ ...activeConv?.labels, ...activeSession?.labels }),
     [activeConv?.labels, activeSession?.labels],
   );
-  const terminalFirst = sessionLabels["omnigent.ui"] === "terminal";
+  const terminalFirst = !forumId && sessionLabels["omnigent.ui"] === "terminal";
   const isClaudeNative = sessionLabels["omnigent.wrapper"] === "claude-code-native-ui";
   // Native-CLI wrapper of either family. Keys harness behavior gates
   // (composer slash commands, `/model`); terminal-first SDK sessions
@@ -2400,7 +2409,7 @@ export function AppShell() {
                     subAgentName={activeSession?.subAgentName ?? null}
                     conversationId={conversationId}
                     permissionLevel={permissionLevel}
-                    actionConversation={actionConversation}
+                    actionConversation={forumId ? null : actionConversation}
                     conversationTitle={headerConversationTitle}
                     projectName={headerProjectName}
                     projectIcon={headerProjectIcon}
@@ -2408,7 +2417,7 @@ export function AppShell() {
                     boundAgent={boundAgent}
                     wrapperLabel={wrapperLabel}
                     canShare={canShare}
-                    canFork={canClone}
+                    canFork={!forumId && canClone}
                     shareDisabled={shareDisabled}
                     shareDisabledReason={shareDisabledReason}
                     onShare={() => setShareOpen(true)}
@@ -2636,6 +2645,7 @@ export function AppShell() {
           </div>
           {conversationId && (
             <PermissionsModal
+              sharePath={forumId ? `/forums/${forumId}` : undefined}
               sessionId={conversationId}
               workspace={activeSession?.workspace ?? activeConv?.workspace}
               open={shareOpen}

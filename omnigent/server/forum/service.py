@@ -167,7 +167,7 @@ class ForumService:
                     active_session = participant.session_id
                     from omnigent.runtime.prompt import forum_turn_prompt
 
-                    prompt = forum_turn_prompt(participant.name, state.posts)
+                    prompt = forum_turn_prompt(participant.name, state.posts, turn_token=token)
                     active = asyncio.create_task(
                         asyncio.wait_for(
                             self._turn(

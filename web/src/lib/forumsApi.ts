@@ -25,6 +25,8 @@ export interface Forum {
   participants: ForumParticipant[];
   max_responses: number;
   completed: number;
+  stop_reason?: "human" | "consensus" | "limit" | null;
+  completion_votes?: string[];
   active_index: number | null;
   posts: {
     id: string;
@@ -32,6 +34,7 @@ export interface Forum {
     display_name?: string;
     role: string;
     text: string;
+    completion_vote?: "DONE" | "CONTINUE";
     created_at: number;
     session_id?: string;
   }[];

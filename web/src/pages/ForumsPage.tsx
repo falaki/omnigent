@@ -502,11 +502,21 @@ function Discussion({ id }: { id: string }) {
         className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 bg-muted/20 px-6 py-2 text-xs text-muted-foreground"
         role="status"
       >
-        <span>{STATUS[forum.status]}</span>
+        <span>
+          {forum.stop_reason === "consensus"
+            ? "Stopped by unanimous agreement"
+            : STATUS[forum.status]}
+        </span>
         <span>
           {forum.completed} / {forum.max_responses} completed responses
         </span>
       </div>
+      {(forum.status === "running" || forum.status === "paused") && (
+        <p className="px-6 py-2 text-xs text-muted-foreground" role="status">
+          {forum.completion_votes?.length ?? 0} of{" "}
+          {forum.participants.filter((p) => !p.paused).length} agents ready to finish
+        </p>
+      )}
       <div className="flex flex-wrap gap-2 border-b border-border/50 px-6 py-3">
         {forum.participants.map((p, i) => (
           <div
@@ -599,6 +609,11 @@ function Discussion({ id }: { id: string }) {
                 </span>
               </div>
               <MessageResponse>{message.text}</MessageResponse>
+              {message.completion_vote && (
+                <p className="mt-3 text-xs text-muted-foreground">
+                  {message.completion_vote === "DONE" ? "Ready to finish" : "Continue discussion"}
+                </p>
+              )}
             </article>
           ))}
         </div>
@@ -739,8 +754,11 @@ function ForumsContent() {
                 {forum.title || "New forum"}
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                {forum.participants.length} agents · {STATUS[forum.status]} · {forum.completed}/
-                {forum.max_responses} responses
+                {forum.participants.length} agents ·{" "}
+                {forum.stop_reason === "consensus"
+                  ? "Stopped by unanimous agreement"
+                  : STATUS[forum.status]}{" "}
+                · {forum.completed}/{forum.max_responses} responses
               </p>
             </Link>
           ))}

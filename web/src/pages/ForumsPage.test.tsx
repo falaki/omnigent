@@ -255,3 +255,24 @@ describe("Forum", () => {
     expect(screen.getByRole("textbox", { name: "Message to the forum" })).toBeDisabled();
   });
 });
+
+it("shows fresh consensus progress excluding inactive participants", async () => {
+  vi.mocked(forumRequest).mockResolvedValue({ ...forum, completion_votes: ["agent-0"] });
+  open("/forums/forum");
+  expect(await screen.findByText("1 of 2 agents ready to finish")).toBeInTheDocument();
+});
+
+it("explains unanimous completion and keeps human restart available", async () => {
+  vi.mocked(forumRequest).mockResolvedValue({
+    ...forum,
+    status: "stopped",
+    stop_reason: "consensus",
+    active_index: null,
+    posts: [{ ...forum.posts[1], completion_vote: "DONE" }],
+  });
+  open("/forums/forum");
+  expect(await screen.findByText("Stopped by unanimous agreement")).toBeInTheDocument();
+  expect(screen.getByText("Ready to finish")).toBeInTheDocument();
+  expect(screen.getByText(/fresh response allowance/)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+});

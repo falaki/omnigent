@@ -61,7 +61,8 @@ vi.mock("@/lib/clipboard", () => ({ copyText: copyTextMock }));
 // AgentInfoContent for codex sessions; stub its routing + fork deps so it
 // renders without a Router/network in jsdom.
 vi.mock("@/lib/routing", () => ({ useNavigate: () => vi.fn() }));
-vi.mock("@/lib/sessionsApi", () => ({ forkSession: vi.fn() }));
+const usageSnapshot = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/sessionsApi", () => ({ forkSession: vi.fn(), getSessionUsage: usageSnapshot }));
 
 // The version footer reads the server version (capabilities probe) and the
 // per-session host version (health poll). Mock both hooks so the footer
@@ -100,9 +101,11 @@ afterEach(() => {
 
 function renderButton(agent: Agent | undefined) {
   return render(
-    <TooltipProvider>
-      <AgentInfoButton agent={agent} />
-    </TooltipProvider>,
+    <QueryClientProvider client={new QueryClient()}>
+      <TooltipProvider>
+        <AgentInfoButton agent={agent} />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -117,6 +120,7 @@ function renderButtonWithSession(
   sessionId: string,
   permissionLevel: number | null = LEVEL_OWNER,
 ) {
+  useChatStore.setState({ conversationId: sessionId });
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -1039,4 +1043,17 @@ describe("agentDisplayLabel", () => {
     expect(agentDisplayLabel("polly")).toBe("Polly");
     expect(agentDisplayLabel("polly (fork conv_ab12)")).toBe("Polly");
   });
+});
+
+it("reads Forum usage from its own session instead of the previously opened chat", async () => {
+  usageSnapshot.mockResolvedValue({ id: "forum", totalCostUsd: 4.56, usageByModel: null });
+  renderButtonWithSession(AGENT_WITH_BOTH, "forum");
+  act(() => useChatStore.setState({ conversationId: "other-chat", sessionCostUsd: 999 }));
+  fireEvent.click(screen.getByTestId("agent-info-trigger"));
+  expect(await screen.findByText("$4.56")).toBeInTheDocument();
+  expect(screen.queryByText("$999.00")).not.toBeInTheDocument();
+  expect(usageSnapshot).toHaveBeenCalledWith(
+    "forum",
+    expect.objectContaining({ signal: expect.any(AbortSignal) }),
+  );
 });

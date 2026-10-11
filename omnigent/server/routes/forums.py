@@ -206,7 +206,13 @@ def create_forums_router(
         common = {"host_id": body.host_id, "workspace": body.workspace, "host_type": "external"}
         parent = await create_session(
             _json_request(
-                request, {**common, "agent_id": first.agent_id, "model_override": first.model}
+                request,
+                {
+                    **common,
+                    "agent_id": first.agent_id,
+                    "model_override": first.model,
+                    "labels": {"omnigent.forum": "true"},
+                },
             )
         )
         forum_id = parent.id
@@ -256,10 +262,12 @@ def create_forums_router(
         return await response(request, forum_id, state)
 
     @router.get("/forums")
-    async def list_forums(request: Request, after: str | None = None) -> dict[str, Any]:
+    async def list_forums(
+        request: Request, after: str | None = None, session_ids_only: bool = False
+    ) -> dict[str, Any]:
         user = require_user(request, auth_provider)
         ids = await asyncio.to_thread(store.ids, after=after)
-        data = []
+        data: list[Any] = []
         for forum_id in ids:
             try:
                 await require_access(
@@ -270,7 +278,10 @@ def create_forums_router(
             state = await asyncio.to_thread(store.get, forum_id)
             conv = await asyncio.to_thread(conversation_store.get_conversation, forum_id)
             if state is not None and conv is not None:
-                data.append(await response(request, forum_id, state))
+                if session_ids_only:
+                    data.extend([forum_id, *(p.session_id for p in state.participants)])
+                else:
+                    data.append(await response(request, forum_id, state))
         return {"data": data, "next_cursor": ids[-1] if len(ids) == 100 else None}
 
     @router.get("/forums/{forum_id}")

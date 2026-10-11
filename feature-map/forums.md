@@ -7,7 +7,11 @@ active turn; only completed responses consume the configured allowance.
 
 ## Sub-features
 
-- `list`: empty/loading/error states and reopening named forums.
+- `list`: empty/loading/error states and reopening named forums; Forum parent
+  and participant sessions are hidden from the sidebar session lists.
+- `workspace`: the standard session info popover and desktop/mobile workspace
+  controls, including Agents, Files, Changes, and supported shell/browser views.
+  Forum cost and per-model token usage include its participant session tree.
 - `setup`: ready harnesses/models, duplicate instances, order, shared workspace,
   maximum completed responses (default 100), and explanations for disabled creation.
 - `discussion`: blank task prompt, attributed Markdown posts, active participant,
@@ -27,9 +31,9 @@ active turn; only completed responses consume the configured allowance.
 
 ## How to get to it (user POV)
 
-**Desktop web:** left navigation → Forum → Forums → New forum or an existing forum.
+**Desktop web:** left navigation → Forums (above Inbox) → New forum or an existing forum.
 
-**Mobile web:** open the navigation drawer → Forum → Forums → New forum or an
+**Mobile web:** open the navigation drawer → Forums (above Inbox) → New forum or an
 existing forum. Native app wrappers use the same web routes but need device checks.
 
 **Shared link:** open a copied `/forums/<id>` link; access follows the parent
@@ -41,7 +45,7 @@ Preconditions: start the isolated environment using the verification skill;
 build the current web UI. Configure at least one ready harness and two model
 instances on the isolated host. Claude/Codex mock journeys also require their CLIs.
 
-For both desktop navigation and the mobile drawer, select Forum, check the empty
+For both desktop navigation and the mobile drawer, select Forums, check the empty
 list, then create a forum. Select a model and use Add another so the same pair
 appears twice. Enter a display name for each instance in Response order; leave
 one blank to keep its harness/model label. Verify the names appear in the
@@ -75,6 +79,20 @@ Pause the responding participant using its header pause icon. Verify it becomes
 Inactive, its interrupted response is not counted, and the other agents continue
 in order. Resume it and verify it rejoins. With two participants, pausing one
 must hold the loop until resumed. Readers cannot operate these controls.
+
+Open a forum through desktop navigation, the mobile drawer, and a direct link.
+Verify its backing session is absent from Sessions (including pinned/project
+groups). Open the top-right info surface to inspect cost and per-model usage;
+open Agents in the workspace sidebar to inspect the participant tree. Verify
+that an ordinary session remains listed and that switching from it to a Forum
+does not display the ordinary session's usage. Workspace tools retain normal
+session availability and access checks.
+
+For consensus completion, have every non-quarantined agent finish its turn with
+an explicit DONE vote. Verify “agents ready to finish” progress, vote badges,
+and “Stopped by unanimous agreement” before the response cap. New guidance or
+CONTINUE must clear votes. Quarantined agents are excluded; unavailable agents
+are not. A new human message restarts with fresh votes and allowance.
 
 ## Gotchas
 

@@ -317,6 +317,15 @@ async def test_forum_sharing_matches_session_permissions(db_uri, tmp_path, monke
         result = await client.post(f"/v1/forums/{forum_id}/pause", json={"paused": False})
         assert result.status_code == 200
         assert result.json()["status"] == "running"
+    async with _client(app, "reader@test") as client:
+        result = await client.get("/v1/forums?session_ids_only=true")
+        assert result.status_code == 200
+        assert result.json()["data"] == [
+            forum_id,
+            *(p.session_id for p in store.get(forum_id).participants),
+        ]
+    async with _client(app, "stranger@test") as client:
+        assert (await client.get("/v1/forums?session_ids_only=true")).json()["data"] == []
     participant_id = store.get(forum_id).participants[0].session_id
     async with _client(app, "reader@test") as client:
         assert (
@@ -700,3 +709,186 @@ def test_forum_pause_holds_guidance_and_resumes_interrupted_turn():
     restored.stop()
     restored.resume()
     assert restored.status == "stopped"
+
+
+def vote_turn(s, vote="DONE", token=None):
+    index = s.select(100)
+    assert index is not None
+    token = token or uuid.uuid4().hex
+    s.begin(index, token)
+    assert s.finish(token, f"My review.\nFORUM_VOTE: {token} {vote}", 100)
+    return token
+
+
+def test_consensus_stops_unanimously_and_restarts_with_fresh_allowance():
+    s = state(maximum=3)
+    message(s)
+    for _ in range(3):
+        vote_turn(s)
+    assert s.status == "stopped"
+    assert s.stop_reason == "consensus"
+    assert s.completed == 3
+    assert s.select(100) is None
+    assert all(p["text"] == "My review." for p in s.posts[1:])
+    assert s.posts[-1]["completion_vote"] == "DONE"
+    message(s, "Please also check edge cases")
+    assert s.completed == 0
+    assert s.stop_reason is None
+    assert s.completion_votes == []
+    assert s.select(100) == 0
+
+
+def test_consensus_continue_requires_every_agent_to_agree_again():
+    s = state()
+    message(s)
+    vote_turn(s)
+    vote_turn(s, "CONTINUE")
+    assert not s.completion_votes
+    vote_turn(s)
+    vote_turn(s)
+    assert s.status == "running"
+    vote_turn(s)
+    assert s.stop_reason == "consensus"
+
+
+def test_consensus_guidance_fences_old_context_vote():
+    s = state(count=2)
+    message(s)
+    vote_turn(s)
+    s.begin(1, "stale-context")
+    message(s, "New requirement")
+    s.finish("stale-context", "Review\nFORUM_VOTE: stale-context DONE", 100)
+    assert s.status == "running"
+    assert not s.completion_votes
+    vote_turn(s)
+    assert s.status == "running"
+    vote_turn(s)
+    assert s.stop_reason == "consensus"
+
+
+def test_consensus_quarantine_excludes_only_manual_pauses_and_resets_votes():
+    s = state()
+    message(s)
+    vote_turn(s)
+    s.set_participant_paused(2, True)
+    assert not s.completion_votes
+    vote_turn(s)
+    vote_turn(s)
+    assert s.stop_reason == "consensus"
+    s = state()
+    message(s)
+    s.participants[2].retry_at = 200
+    for _ in range(4):
+        vote_turn(s)
+    assert s.status == "running"
+    s.set_participant_paused(0, True)
+    s.set_participant_paused(1, True)
+    assert s.select(100) is None
+    assert not s.completion_votes
+
+
+def test_consensus_persistence_errors_interrupts_and_duplicate_completions():
+    s = state()
+    message(s)
+    token = vote_turn(s)
+    s = ForumState.from_dict(s.to_dict())
+    assert len(s.completion_votes) == 1
+    assert not s.finish(token, f"Again\nFORUM_VOTE: {token} DONE", 100)
+    s.begin(1, "failed")
+    s.finish("failed", "", 100, "unavailable")
+    assert not s.completion_votes
+    s.participants[1].retry_at = 0
+    vote_turn(s)
+    s.pause()
+    assert not s.completion_votes
+    s.resume()
+    vote_turn(s)
+    s.stop()
+    assert not s.completion_votes
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "done",
+        "Review\nFORUM_VOTE: wrong DONE",
+        "Review\n> FORUM_VOTE: token DONE",
+        "Review\n```\nFORUM_VOTE: token DONE",
+        "Review\nFORUM_VOTE: token DONE\nMore text",
+        "Review\nFORUM_VOTE: token DONE\nFORUM_VOTE: token CONTINUE",
+        "FORUM_VOTE: token DONE",
+    ],
+)
+def test_invalid_completion_vote_never_grants_consent(text):
+    from omnigent.server.forum.state import parse_completion_vote
+
+    assert parse_completion_vote(text, "token") == (text, "CONTINUE")
+
+
+def test_consensus_protocol_is_in_turn_prompt():
+    from omnigent.runtime.prompt import forum_turn_prompt
+
+    prompt = forum_turn_prompt("Reviewer", [], turn_token="unique-turn")
+    assert "FORUM_VOTE: unique-turn DONE" in prompt
+    assert "FORUM_VOTE: unique-turn CONTINUE" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("native", [False, True])
+async def test_worker_stops_by_consensus_before_response_limit(db_uri, native):
+    import asyncio
+
+    from omnigent.runtime import session_stream
+    from omnigent.server.forum.service import ForumService
+
+    store = ForumStore(db_uri)
+    forum_id = uuid.uuid4().hex
+    s = state(2, maximum=100)
+    if native:
+        for participant in s.participants:
+            participant.harness = "codex-native"
+    message(s)
+    store.create(forum_id, s)
+    service = ForumService(store)
+    items = {}
+    prompts = []
+
+    async def history(session_id):
+        return items.get(session_id, [])
+
+    async def send(session_id, body):
+        if body["type"] == "message":
+            prompt = body["data"]["content"][0]["text"]
+            prompts.append(prompt)
+            token = store.get(forum_id).active_token
+            assert f"FORUM_VOTE: {token} DONE" in prompt
+            items.setdefault(session_id, []).append(
+                {
+                    "id": uuid.uuid4().hex,
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": f"Reviewed.\nFORUM_VOTE: {token} DONE"}
+                    ],
+                }
+            )
+            event = (
+                {"type": "forum.turn.finished", "status": "idle"}
+                if native
+                else {"type": "response.completed"}
+            )
+            if native:
+                session_stream.publish(session_id, {"type": "session.status", "status": "running"})
+            session_stream.publish(session_id, event)
+        return {"queued": True}
+
+    service.wake(forum_id, send, history)
+    try:
+        async with asyncio.timeout(10):
+            while store.get(forum_id).status != "stopped":
+                await asyncio.sleep(0.02)
+        assert store.get(forum_id).stop_reason == "consensus"
+        assert store.get(forum_id).completed == 2
+        assert len(prompts) == 2
+        assert "Reviewed." in prompts[1]
+    finally:
+        await service.shutdown()
