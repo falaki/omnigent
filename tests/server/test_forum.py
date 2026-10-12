@@ -10,6 +10,11 @@ from omnigent.server.forum.state import ForumState, Participant
 from omnigent.server.forum.store import ForumStore
 
 
+@pytest.fixture(autouse=True)
+def enable_forums(monkeypatch):
+    monkeypatch.setenv("OMNIGENT_FEATURES", "forums")
+
+
 def state(count=3, maximum=100):
     return ForumState(
         [
@@ -290,6 +295,9 @@ async def test_forum_sharing_matches_session_permissions(db_uri, tmp_path, monke
         assert (await client.get(f"/v1/forums/{forum_id}")).status_code == 404
         assert (await client.get("/v1/forums")).json()["data"] == []
     async with _client(app, "reader@test") as client:
+        assert (
+            await client.post(f"/v1/forums/{forum_id}/rename", json={"title": "No"})
+        ).status_code == 403
         assert (await client.get(f"/v1/forums/{forum_id}")).json()[
             "permission_level"
         ] == LEVEL_READ
@@ -892,3 +900,71 @@ async def test_worker_stops_by_consensus_before_response_limit(db_uri, native):
         assert "Reviewed." in prompts[1]
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_forum_rename_persists_and_survives_first_message(app, db_uri, monkeypatch):
+    import httpx
+
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+
+    conversations = SqlAlchemyConversationStore(db_uri)
+    parent = conversations.create_conversation()
+    store = ForumStore(db_uri)
+    store.create(parent.id, state())
+    monkeypatch.setattr(app.state.forum_service, "wake", lambda *_args: None)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        path = f"/v1/forums/{parent.id}"
+        assert (await client.post(path + "/rename", json={"title": " "})).status_code == 422
+        result = await client.post(path + "/rename", json={"title": " My review "})
+        assert result.status_code == 200
+        assert result.json()["title"] == "My review"
+        result = await client.post(path + "/messages", json={"text": "Review this code"})
+        assert result.json()["title"] == "My review"
+        assert (await client.get(path)).json()["title"] == "My review"
+        assert conversations.get_conversation(parent.id).title == "My review"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1/forums"),
+        ("POST", "/v1/forums"),
+        ("GET", "/v1/forums/missing"),
+        ("POST", "/v1/forums/missing/messages"),
+        ("POST", "/v1/forums/missing/stop"),
+        ("POST", "/v1/forums/missing/pause"),
+        ("POST", "/v1/forums/missing/rename"),
+        ("POST", "/v1/forums/missing/delete"),
+        ("POST", "/v1/forums/missing/participants/missing/pause"),
+    ],
+)
+async def test_disabled_forums_reject_all_endpoints(db_uri, method, path):
+    import httpx
+    from fastapi import FastAPI
+
+    from omnigent.server.feature_flags import FeatureFlags
+    from omnigent.server.routes.forums import create_forums_router
+    from omnigent.stores.conversation_store.sqlalchemy_store import SqlAlchemyConversationStore
+
+    disabled = FastAPI()
+    router, service = create_forums_router(
+        SqlAlchemyConversationStore(db_uri),
+        None,
+        auth_provider=None,
+        permission_store=None,
+        agent_cache=None,
+        host_store=None,
+        host_registry=None,
+        feature_flags=FeatureFlags(),
+    )
+    disabled.include_router(router, prefix="/v1")
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=disabled), base_url="http://test"
+    ) as client:
+        result = await client.request(method, path)
+        assert result.status_code == 404, result.text
+    assert not service._tasks

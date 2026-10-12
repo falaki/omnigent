@@ -13,8 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
+from omnigent.entities import USER_SESSION_TITLE_MAX_CHARS
 from omnigent.errors import OmnigentError
 from omnigent.server.auth import LEVEL_EDIT, LEVEL_OWNER, LEVEL_READ
+from omnigent.server.feature_flags import Feature, FeatureFlags, resolve_feature_flags
 from omnigent.server.forum.service import ForumService, explicit_stop
 from omnigent.server.forum.state import ForumState, Participant
 from omnigent.server.forum.store import ForumStore
@@ -47,6 +49,11 @@ class CreateForumRequest(BaseModel):
 class ForumParticipantPauseRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     paused: bool
+
+
+class ForumRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=USER_SESSION_TITLE_MAX_CHARS)
 
 
 class ForumMessageRequest(BaseModel):
@@ -86,10 +93,17 @@ def create_forums_router(
     agent_cache,
     host_store,
     host_registry,
+    feature_flags: FeatureFlags | None = None,
 ) -> tuple[APIRouter, ForumService]:
     store = ForumStore(conversation_store.storage_location)
     service = ForumService(store)
-    router = APIRouter(dependencies=[Depends(require_trusted_origin)])
+    flags = feature_flags or resolve_feature_flags()
+
+    async def require_forums() -> None:
+        if not flags.enabled(Feature.FORUMS):
+            raise HTTPException(404, "not found")
+
+    router = APIRouter(dependencies=[Depends(require_forums), Depends(require_trusted_origin)])
 
     async def access(request: Request, forum_id: str, level: int) -> ForumState:
         user = require_user(request, auth_provider)
@@ -376,11 +390,17 @@ def create_forums_router(
             )
         if state is None:
             raise HTTPException(404, "Forum not found")
-        if len(state.posts) == 1:
+        existing = await asyncio.to_thread(conversation_store.get_conversation, forum_id)
+        if len(state.posts) == 1 and existing is not None and not existing.title:
             from omnigent.entities import synthesize_conversation_title
 
             title = synthesize_conversation_title([{"type": "input_text", "text": text}])
-            await asyncio.to_thread(conversation_store.update_conversation, forum_id, title=title)
+            await asyncio.to_thread(
+                conversation_store.rename_conversation_if_title_matches,
+                forum_id,
+                existing.title or "",
+                title,
+            )
             conv = await asyncio.to_thread(conversation_store.get_conversation, forum_id)
             request.app.state.background_title_coordinator.schedule(
                 session_id=forum_id,
@@ -392,6 +412,19 @@ def create_forums_router(
             )
         if not stop:
             wake(request, forum_id)
+        return await response(request, forum_id, state)
+
+    @router.post("/forums/{forum_id}/rename")
+    async def rename_forum(
+        request: Request, forum_id: str, body: ForumRenameRequest
+    ) -> dict[str, Any]:
+        state = await access(request, forum_id, LEVEL_EDIT)
+        if state.status == "deleting":
+            raise HTTPException(409, "Forum is being deleted")
+        title = body.title.strip()
+        if not title:
+            raise HTTPException(422, "Forum name must not be blank")
+        await asyncio.to_thread(conversation_store.update_conversation, forum_id, title=title)
         return await response(request, forum_id, state)
 
     @router.post("/forums/{forum_id}/pause")

@@ -1,11 +1,15 @@
+import { useServerInfo } from "@/lib/CapabilitiesContext";
+import { isFeatureEnabled } from "@/lib/capabilities";
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { forumRequest } from "@/lib/forumsApi";
 
 /** Include older forums whose parent sessions predate the Forum label. */
 export function useForumSessionIds() {
+  const enabled = isFeatureEnabled(useServerInfo(), "forums");
   const { data } = useQuery({
     queryKey: ["forum-session-ids"],
+    enabled,
     queryFn: async () => {
       const ids: string[] = [];
       let cursor: string | null = null;

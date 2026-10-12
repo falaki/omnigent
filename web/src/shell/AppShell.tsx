@@ -247,7 +247,7 @@ export function AppShell() {
   // (rail open/width/tab/open files) used throughout this component.
   const {
     conversationId: chatConversationId,
-    forumId,
+    forumId: routeForumId,
     extensionId,
   } = useParams<{
     conversationId: string;
@@ -258,6 +258,9 @@ export function AppShell() {
   // has no server session behind it. Feed every server-scoped hook this instead
   // of the raw route id so none of them fetch `/v1/sessions/temp:*` during the
   // create window (or on a stale temp reload, before ChatPage redirects).
+  const forumInfo = useServerInfo();
+  const forumId =
+    forumInfo !== "loading" && forumInfo.features?.forums === true ? routeForumId : undefined;
   const conversationId = chatConversationId ?? forumId;
   useEffect(() => {
     if (forumId) void useChatStore.getState().switchTo(forumId);

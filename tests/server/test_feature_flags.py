@@ -23,6 +23,7 @@ def test_features_default_off() -> None:
         "usage_page": False,
         "harness_install": False,
         "canvas": False,
+        "forums": False,
         "harness_settings_ui": False,
     }
 
@@ -85,3 +86,9 @@ def test_release_flags_have_lifecycle_metadata_and_default_off() -> None:
         assert definition.owner
         assert definition.review_by_release
         assert not FeatureFlags().enabled(definition.feature)
+
+
+def test_forums_opt_in():
+    flags = resolve_feature_flags({FEATURES_ENV_VAR: "forums"})
+    assert flags.enabled(Feature.FORUMS)
+    assert flags.frontend_dict()["forums"] is True

@@ -3155,6 +3155,7 @@ def create_app(
         agent_cache=agent_cache,
         host_store=host_store,
         host_registry=host_registry,
+        feature_flags=resolved_feature_flags,
     )
     app.state.forum_service = forum_service
     app.include_router(forum_router, prefix="/v1", tags=["forums"])

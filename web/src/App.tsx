@@ -175,9 +175,30 @@ function AppRoutes({ basename }: AppProps) {
           <Route path={prefix || "/"} element={<ChatPage />} />
           <Route path={`${prefix}/c/:conversationId`} element={<ChatPage />} />
           <Route path={`${prefix}/inbox`} element={<InboxPage />} />
-          <Route path={`${prefix}/forums`} element={<ForumsPage />} />
-          <Route path={`${prefix}/forums/new`} element={<ForumsPage />} />
-          <Route path={`${prefix}/forums/:forumId`} element={<ForumsPage />} />
+          <Route
+            path={`${prefix}/forums`}
+            element={
+              <FeatureGatedPage feature="forums">
+                <ForumsPage />
+              </FeatureGatedPage>
+            }
+          />
+          <Route
+            path={`${prefix}/forums/new`}
+            element={
+              <FeatureGatedPage feature="forums">
+                <ForumsPage />
+              </FeatureGatedPage>
+            }
+          />
+          <Route
+            path={`${prefix}/forums/:forumId`}
+            element={
+              <FeatureGatedPage feature="forums">
+                <ForumsPage />
+              </FeatureGatedPage>
+            }
+          />
           <Route
             path={`${prefix}/canvas`}
             element={

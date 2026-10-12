@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ForumsPage } from "./ForumsPage";
-import { forumRequest } from "@/lib/forumsApi";
+import { forumRequest, listForums } from "@/lib/forumsApi";
 import type { Forum } from "@/lib/forumsApi";
 
 vi.mock("@/hooks/useViewerId", () => ({ useViewerId: () => "local" }));
@@ -249,6 +249,7 @@ describe("Forum", () => {
     vi.mocked(forumRequest).mockResolvedValue({ ...forum, permission_level: 1 });
     open("/forums/forum");
     await screen.findByText("Review parser");
+    expect(screen.getByRole("button", { name: "Rename forum: Review parser" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Delete forum" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
@@ -275,4 +276,37 @@ it("explains unanimous completion and keeps human restart available", async () =
   expect(screen.getByText("Ready to finish")).toBeInTheDocument();
   expect(screen.getByText(/fresh response allowance/)).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Stop" })).toBeDisabled();
+});
+
+it("renames a forum by clicking its title and supports cancel", async () => {
+  vi.mocked(forumRequest).mockImplementation(async (_path, body) =>
+    body ? { ...forum, title: "Parser review" } : forum,
+  );
+  open("/forums/forum");
+  fireEvent.click(await screen.findByRole("button", { name: "Rename forum: Review parser" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Forum name" }), { target: { value: " " } });
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("textbox", { name: "Forum name" })).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Rename forum: Review parser" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Forum name" }), {
+    target: { value: " Parser review " },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() =>
+    expect(forumRequest).toHaveBeenCalledWith("/forum/rename", { title: "Parser review" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("textbox", { name: "Forum name" })).not.toBeInTheDocument(),
+  );
+});
+
+it("keeps titles in the Forums list as navigation links", async () => {
+  vi.mocked(listForums).mockResolvedValueOnce([forum]);
+  open("/forums");
+  expect(await screen.findByRole("link", { name: /Review parser/ })).toHaveAttribute(
+    "href",
+    "/forums/forum",
+  );
+  expect(screen.queryByRole("textbox", { name: "Forum name" })).not.toBeInTheDocument();
 });

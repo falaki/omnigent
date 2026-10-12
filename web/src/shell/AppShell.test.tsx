@@ -4602,7 +4602,7 @@ describe("AppShell design-mode submission", () => {
 it("uses the Forum parent session for shell panels on a Forum route", async () => {
   mockConversations([]);
   const switchTo = vi.spyOn(useChatStore.getState(), "switchTo").mockResolvedValue();
-  renderShell("/forums/forum-parent");
+  renderShell("/forums/forum-parent", serverInfo({ features: { forums: true } }));
   expect(await screen.findByText("Forum discussion")).toBeInTheDocument();
   expect(useSessionMock).toHaveBeenCalledWith("forum-parent");
   expect(useSessionAgent).toHaveBeenCalledWith("forum-parent");

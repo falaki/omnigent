@@ -344,6 +344,20 @@ function Discussion({ id }: { id: string }) {
   });
   const [text, setText] = useState("");
   const [sharing, setSharing] = useState(false);
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const rename = useMutation({
+    mutationFn: () => forumRequest<Forum>(`/${id}/rename`, { title: titleDraft.trim() }),
+    onSuccess: (renamed) => {
+      cache.setQueryData<Forum>(["forum", id], (previous) =>
+        previous ? { ...previous, title: renamed.title } : renamed,
+      );
+      setEditingTitle(false);
+      void cache.invalidateQueries({ queryKey: ["forums"] });
+      void cache.invalidateQueries({ queryKey: ["session", id] });
+      void cache.invalidateQueries({ queryKey: ["forum", id] });
+    },
+  });
   const update = (forum: Forum) => cache.setQueryData(["forum", id], forum);
   const post = useMutation({
     mutationFn: (message: string) =>
@@ -416,7 +430,62 @@ function Discussion({ id }: { id: string }) {
         >
           <ArrowLeftIcon className="size-4" />
         </Link>
-        <h1 className="min-w-0 flex-1 truncate font-semibold">{forum.title || "New forum"}</h1>
+        <div className="min-w-0 flex-1">
+          {editingTitle ? (
+            <form
+              className="flex flex-wrap items-center gap-2"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (titleDraft.trim() && !rename.isPending) rename.mutate();
+              }}
+            >
+              <Input
+                autoFocus
+                aria-label="Forum name"
+                value={titleDraft}
+                disabled={rename.isPending}
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && !rename.isPending) setEditingTitle(false);
+                }}
+                className="min-w-0 flex-1"
+              />
+              <Button type="submit" disabled={!titleDraft.trim() || rename.isPending}>
+                {rename.isPending ? "Saving…" : "Save"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={rename.isPending}
+                onClick={() => setEditingTitle(false)}
+              >
+                Cancel
+              </Button>
+              {rename.error && (
+                <p role="alert" className="w-full text-sm text-destructive">
+                  {rename.error.message}
+                </p>
+              )}
+            </form>
+          ) : (
+            <h1 className="truncate font-semibold">
+              <button
+                type="button"
+                className="max-w-full truncate rounded hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                disabled={!canEdit}
+                title="Rename forum"
+                aria-label={`Rename forum: ${forum.title || "New forum"}`}
+                onClick={() => {
+                  setTitleDraft(forum.title || "");
+                  rename.reset();
+                  setEditingTitle(true);
+                }}
+              >
+                {forum.title || "New forum"}
+              </button>
+            </h1>
+          )}
+        </div>
         <Button variant="outline" disabled={!canManage} onClick={() => setSharing(true)}>
           Share
         </Button>

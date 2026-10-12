@@ -41,7 +41,8 @@ session's permissions. Participant links open ordinary session tool/approval vie
 
 ## Driving it with the repro environment
 
-Preconditions: start the isolated environment using the verification skill;
+Preconditions: enable the deployment flag with OMNIGENT_FEATURES=forums, then
+start the isolated environment using the verification skill;
 build the current web UI. Configure at least one ready harness and two model
 instances on the isolated host. Claude/Codex mock journeys also require their CLIs.
 
@@ -94,7 +95,16 @@ and “Stopped by unanimous agreement” before the response cap. New guidance o
 CONTINUE must clear votes. Quarantined agents are excluded; unavailable agents
 are not. A new human message restarts with fresh votes and allowance.
 
+Click the title inside a forum to rename it. Save with Enter or Save; cancel
+with Escape or Cancel. Blank names are rejected and readers cannot rename.
+Reload to verify persistence, then select the renamed entry in Forums to verify
+it still opens the discussion. Repeat at mobile width.
+
 ## Gotchas
+
+- Forums is disabled by default. Without the forums release flag the navigation
+  is hidden, direct Forum pages show Not Found, and all Forum APIs return 404.
+  Restart the server after changing OMNIGENT_FEATURES. Existing data is retained.
 
 - A response allowance counts completed agent responses, not whole rounds.
 - Guidance does not interrupt; Stop does. Explicit stops override recovery.

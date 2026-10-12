@@ -1128,15 +1128,22 @@ function SidebarImpl({
                   Automations
                 </Link>
               </Button>
-              <PrimaryNavLink
-                to="/forums"
-                label="Forums"
-                icon={MessagesSquareIcon}
-                active={isForumPage}
-                onClick={onNavClick}
-                componentId="sidebar.forum"
-                testId="forum-nav"
-              />
+              {isFeatureEnabled(serverInfo, "forums") && (
+                <PrimaryNavLink
+                  to="/forums"
+                  label="Forums"
+                  icon={MessagesSquareIcon}
+                  active={isForumPage}
+                  onClick={onNavClick}
+                  componentId="sidebar.forum"
+                  testId="forum-nav"
+                  trailing={
+                    <span className="ml-auto rounded border border-border px-1.5 py-0.5 text-10 font-medium text-muted-foreground">
+                      experimental
+                    </span>
+                  }
+                />
+              )}
               <Button
                 asChild
                 variant="ghost"
