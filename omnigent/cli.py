@@ -98,6 +98,7 @@ from omnigent.process_logging import (
     LOG_LEVEL_ENV_VAR,
     LOG_TO_STDERR_ENV_VAR,
     data_dir,
+    ensure_stdio_survives_unencodable_output,
     env_truthy,
     process_log_dir_reference,
 )
@@ -2233,40 +2234,6 @@ def _enforce_wrapper_guard() -> None:
         raise SystemExit(2)
 
 
-def _ensure_stdio_survives_unencodable_output() -> None:
-    """Keep stdio writes from aborting when the stream encoding is legacy.
-
-    A shell on a legacy non-UTF-8 encoding (Windows ANSI codepage like
-    cp1252, a C/latin-1 locale, or an explicit ``PYTHONIOENCODING``) hands
-    Python stdio streams that can't encode the CLI's decorative glyphs
-    (emoji, ``✓``, ``←``, …), so a plain ``print`` raises
-    ``UnicodeEncodeError`` mid-command. Reconfigure such streams so the
-    unencodable character degrades to a stand-in instead of killing the
-    command: on Windows switch to UTF-8 outright (modern terminals render
-    it, and it preserves the glyphs); elsewhere keep the stream's own
-    encoding and only relax the error handler, so output stays in the
-    encoding the consumer asked for. ``PYTHONUTF8`` can't help here since
-    PEP 540 reads it only at interpreter startup.
-    """
-    for stream in (sys.stdout, sys.stderr):
-        reconfigure = getattr(stream, "reconfigure", None)
-        if reconfigure is None:
-            continue
-        encoding = (getattr(stream, "encoding", "") or "").lower().replace("_", "-")
-        if encoding in {"utf-8", "utf8"}:
-            continue
-        # Trade-off: errors="replace" is process-wide, so any genuinely
-        # unencodable output (not just decorative glyphs) degrades to "?"
-        # instead of raising — acceptable for a CLI's human-facing stdio.
-        # Detached/replaced streams (or a test's capture object) can't be
-        # reconfigured; the glyph fallback still guards the actual writes.
-        with contextlib.suppress(ValueError, OSError):
-            if sys.platform == "win32":
-                reconfigure(encoding="utf-8", errors="replace")
-            else:
-                reconfigure(errors="replace")
-
-
 @capture_cli_entry
 def main() -> None:
     """
@@ -2311,7 +2278,7 @@ def main() -> None:
     # Legacy-codepage stdio (Windows ANSI, C locale, PYTHONIOENCODING)
     # can't encode the CLI's glyphs; harden the streams before any command
     # renders so the write degrades instead of aborting.
-    _ensure_stdio_survives_unencodable_output()
+    ensure_stdio_survives_unencodable_output()
 
     # Relocate pre-rename ~/.omniagents state before anything reads ~/.omnigent
     # (update-check cache, diagnostics logs, config). No-op once migrated.
@@ -3632,12 +3599,23 @@ def _build_host_daemon_env(
     )
 
     if not server_url:
+        from omnigent.telemetry.environment import CI_ENV_VARS
+
+        # The local server detects CI and usage opt-outs in its own environment.
+        local_server_env_vars = (
+            _LOCAL_DAEMON_ENV_ALLOWLIST
+            | CI_ENV_VARS
+            | {
+                "DISABLE_TELEMETRY",
+                "DO_NOT_TRACK",
+            }
+        )
         daemon_env_prefixes = (*_RUNNER_ENV_ALLOWLIST_PREFIXES, *_LOCAL_DAEMON_ENV_PREFIXES)
         env = {
             key: value
             for key, value in os.environ.items()
             if key in _RUNNER_ENV_ALLOWLIST
-            or key in _LOCAL_DAEMON_ENV_ALLOWLIST
+            or key in local_server_env_vars
             or key in _HOST_DAEMON_PROXY_ENV_ALLOWLIST
             or key in identity_env_vars
             or key.startswith(daemon_env_prefixes)
@@ -4625,6 +4603,20 @@ def server(
 
             databricks_store = DatabricksConnectionStore(db_uri, dbx_cipher)
 
+    from omnigent.server.mcp_registry import McpRegistry, McpRegistryConfig
+
+    mcp_registry = None
+    registry_config = McpRegistryConfig.from_env()
+    if registry_config is not None:
+        from omnigent.stores.credential_store import build_secret_cipher
+        from omnigent.stores.credential_store.sqlalchemy_store import CredentialStore
+
+        registry_cipher = build_secret_cipher()
+        mcp_registry = McpRegistry(
+            registry_config,
+            CredentialStore(db_uri, registry_cipher) if registry_cipher else None,
+        )
+
     # Accounts mode ergonomics: when accounts mode is selected
     # (OMNIGENT_AUTH_ENABLED=1 without OIDC config, or an explicit
     # OMNIGENT_AUTH_PROVIDER=accounts), supply sensible defaults
@@ -4694,6 +4686,7 @@ def server(
         sandbox_config=sandbox_config,
         github_config=github_config,
         github_store=github_store,
+        mcp_registry=mcp_registry,
         databricks_config=databricks_config,
         databricks_store=databricks_store,
         server_config=title_server_config,
